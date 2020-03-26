@@ -2,13 +2,14 @@
 
 NTIRE2020 Real World Super-Resolution Challenge Track 1 Submission
 
-[Factsheet](./fact_sheet.pdf)
-[Results](https://)
+[Factsheet](./factsheet.pdf)
+
+[Full results](https://drive.google.com/file/d/1kmiBM_jfhfWcxXTJB17MvHW_9XM0sbZe/view?usp=sharing)
 
 
 ## Test
 #### Dependency
-- Python 3
+- Python 3.6
 - PyTorch 1.2
 - numpy
 - pillow
@@ -28,7 +29,7 @@ git clone
 ```
 python test.py
 ```
-If your GPU memory lacks, please try with option `-n 3` or with larger number.
+If your GPU memory lacks, please try with option `-n 3` or a more larger number.
 
 5. Check your results in `./output`.
 
