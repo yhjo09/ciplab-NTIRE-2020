@@ -29,7 +29,7 @@ git clone
 ```
 python test.py
 ```
-If your GPU memory lacks, please try with option `-n 3` or a more larger number.
+If your GPU memory lacks, please try with option `-n 3` or a larger number.
 
 5. Check your results in `./output`.
 
