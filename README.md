@@ -2,7 +2,7 @@
 
 NTIRE2020 Real World Super-Resolution Challenge Track 1 Submission
 
-[Factsheet](./factsheet.pdf)
+[Factsheet](../../raw/master/factsheet.pdf)
 
 [Full results](https://drive.google.com/file/d/1kmiBM_jfhfWcxXTJB17MvHW_9XM0sbZe/view?usp=sharing)
 
