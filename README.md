@@ -5,6 +5,7 @@ NTIRE2020 Real World Super-Resolution Challenge Track 1 Submission
 [Factsheet](../../raw/master/factsheet.pdf)
 
 [Full results](https://drive.google.com/file/d/1kmiBM_jfhfWcxXTJB17MvHW_9XM0sbZe/view?usp=sharing)
+
 [Fix results](https://drive.google.com/file/d/1rbOj_HfNndxuFrXJ-x3gGD2Yqm7o60ve/view?usp=sharing): We found that 1000x1000 cropped images for 1602, 1612, 1648, 1677 are included in the above link. Please download and overwrite them.
 
 ## Test
