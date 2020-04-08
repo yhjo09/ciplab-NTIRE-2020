@@ -35,3 +35,8 @@ If your GPU memory lacks, please try with option `-n 3` or a larger number.
 5. Check your results in `./output`.
 
 
+
+#### Codes from
+[LPIPS] (https://github.com/richzhang/PerceptualSimilarity)
+
+[ESRGAN] (https://github.com/xinntao/ESRGAN)
