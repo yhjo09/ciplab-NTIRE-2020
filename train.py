@@ -2,573 +2,68 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.init as init
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable, Function
-from torch.utils.data import DataLoader
+from torch.autograd import Variable
 
-import PIL
 from PIL import Image
-
 import numpy as np
 import time
-from os import listdir, mkdir
-from os.path import isfile, join, isdir
-import math
+from os import mkdir
+from os.path import join, isdir
 from tqdm import tqdm
 import glob
-import sys
 
-import threading
 
-def PSNR(y_true,y_pred, shave_border=4):
-    '''
-        Input must be 0-255, 2D
-    '''
+from utils import PSNR, GeneratorEnqueuer, DirectoryIterator_NTIRE2020, DownSample2DMatlab, Huber, _load_img_array, _rgb2ycbcr, im2tensor
 
-    target_data = np.array(y_true, dtype=np.float32)
-    ref_data = np.array(y_pred, dtype=np.float32)
 
-    diff = ref_data - target_data
-    if shave_border > 0:
-        diff = diff[shave_border:-shave_border, shave_border:-shave_border]
-    rmse = np.sqrt(np.mean(np.power(diff, 2)))
 
-    return 20 * np.log10(255./rmse)
+### USER PARAMS ###
+EXP_NAME = "PESR"
+VERSION = "1"
+UPSCALE = 16        # upscaling factor
 
+NB_BATCH = 2        # mini-batch
+NB_CROP_FRAME = 2   # crop N patches from every image
+PATCH_SIZE = 384    # Training patch size
 
+START_ITER = 0      # Set 0 for from scratch, else will load saved params and trains further
+NB_ITER_MSE = 75000 # MSE pretraining iteration, after that the full loss works
+NB_ITER = 150000    # Total number of training iterations
 
-def _rgb2ycbcr(img, maxVal=255):
-#    r = img[:,:,0]
-#    g = img[:,:,1]
-#    b = img[:,:,2]
+I_DISPLAY = 100     # display info every N iteration
+I_VALIDATION = 100  # validate every N iteration
+I_SAVE = 1000       # save models every N iteration
 
-    O = np.array([[16],
-                  [128],
-                  [128]])
-    T = np.array([[0.256788235294118, 0.504129411764706, 0.097905882352941],
-                  [-0.148223529411765, -0.290992156862745, 0.439215686274510],
-                  [0.439215686274510, -0.367788235294118, -0.071427450980392]])
+L_ADV = 1e-3        # Scaling params for the Adv loss
+L_FM = 1            # Scaling params for the feature matching loss
+L_LPIPS = 1e-3      # Scaling params for the LPIPS loss
 
-#    ycbcr = np.empty([img.shape[0], img.shape[1], img.shape[2]])
+TRAIN_DIR = './train/'  # Training images: png files should just locate in the directory (eg ./train/img0001.png ... ./train/img0800.png)
+VAL_DIR = './val/'      # Validation images
 
-    if maxVal == 1:
-        O = O / 255.0
+LR_G = 1e-5         # Learning rate for the generator
+LR_D = 1e-5         # Learning rate for the discriminator
 
-#    ycbcr[:,:,0] = ((T[0,0] * r) + (T[0,1] * g) + (T[0,2] * b) + O[0])
-#    ycbcr[:,:,1] = ((T[1,0] * r) + (T[1,1] * g) + (T[1,2] * b) + O[1])
-#    ycbcr[:,:,2] = ((T[2,0] * r) + (T[2,1] * g) + (T[2,2] * b) + O[2])
+best_avg_lpips = 0.4
 
-    t = np.reshape(img, (img.shape[0]*img.shape[1], img.shape[2]))
-    t = np.dot(t, np.transpose(T))
-    t[:, 0] += O[0]
-    t[:, 1] += O[1]
-    t[:, 2] += O[2]
-    ycbcr = np.reshape(t, [img.shape[0], img.shape[1], img.shape[2]])
 
-#    print(np.all((ycbcr - ycbcr_) < 1/255.0/2.0))
-
-    return ycbcr
-
-def _load_img_array(path, color_mode='RGB', channel_mean=None, modcrop=[0,0,0,0]):
-    '''Load an image using PIL and convert it into specified color space,
-    and return it as an numpy array.
-
-    https://github.com/fchollet/keras/blob/master/keras/preprocessing/image.py
-    The code is modified from Keras.preprocessing.image.load_img, img_to_array.
-    '''
-    ## Load image
-    from PIL import Image
-    img = Image.open(path)
-    if color_mode == 'RGB':
-        cimg = img.convert('RGB')
-        x = np.asarray(cimg, dtype='float32')
-
-    elif color_mode == 'YCbCr' or color_mode == 'Y':
-        cimg = img.convert('YCbCr')
-        x = np.asarray(cimg, dtype='float32')
-        if color_mode == 'Y':
-            x = x[:,:,0:1]
-
-    ## To 0-1
-    x *= 1.0/255.0
-
-    if channel_mean:
-        x[:,:,0] -= channel_mean[0]
-        x[:,:,1] -= channel_mean[1]
-        x[:,:,2] -= channel_mean[2]
-
-    if modcrop[0]*modcrop[1]*modcrop[2]*modcrop[3]:
-        x = x[modcrop[0]:-modcrop[1], modcrop[2]:-modcrop[3], :]
-
-    return x
-
-
-class GeneratorEnqueuer(object):
-    """Builds a queue out of a data generator.
-    Used in `fit_generator`, `evaluate_generator`, `predict_generator`.
-    # Arguments
-        generator: a generator function which endlessly yields data
-        pickle_safe: use multiprocessing if True, otherwise threading
-
-    **copied from https://github.com/fchollet/keras/blob/master/keras/engine/training.py
-
-    Usage:
-    enqueuer = GeneratorEnqueuer(generator, pickle_safe=pickle_safe)
-    enqueuer.start(max_q_size=max_q_size, workers=workers)
-
-    while enqueuer.is_running():
-        if not enqueuer.queue.empty():
-            generator_output = enqueuer.queue.get()
-            break
-        else:
-            time.sleep(wait_time)
-    """
-
-    def __init__(self, generator, use_multiprocessing=True, wait_time=0.00001, random_seed=int(time.time())):
-        self.wait_time = wait_time
-        self._generator = generator
-        self._use_multiprocessing = use_multiprocessing
-        self._threads = []
-        self._stop_event = None
-        self.queue = None
-        self.random_seed = random_seed
-
-
-
-    def start(self, workers=1, max_q_size=10):
-        """Kicks off threads which add data from the generator into the queue.
-        # Arguments
-            workers: number of worker threads
-            max_q_size: queue size (when full, threads could block on put())
-            wait_time: time to sleep in-between calls to put()
-        """
-
-        def data_generator_task():
-            while not self._stop_event.is_set():
-                try:
-                    if self._use_multiprocessing or self.queue.qsize() < max_q_size:
-                        generator_output = next(self._generator)
-                        self.queue.put(generator_output)
-                    else:
-                        time.sleep(self.wait_time)
-                except Exception:
-                    self._stop_event.set()
-                    raise
-
-        try:
-            import multiprocessing
-            try:
-                import queue
-            except ImportError:
-                import Queue as queue
-
-            if self._use_multiprocessing:
-                self.queue = multiprocessing.Queue(maxsize=max_q_size)
-                self._stop_event = multiprocessing.Event()
-            else:
-                self.queue = queue.Queue()
-                self._stop_event = threading.Event()
-
-            for _ in range(workers):
-                if self._use_multiprocessing:
-                    # Reset random seed else all children processes
-                    # share the same seed
-                    np.random.seed(self.random_seed)
-                    thread = multiprocessing.Process(target=data_generator_task)
-                    thread.daemon = True
-                    if self.random_seed is not None:
-                        self.random_seed += 1
-                else:
-                    thread = threading.Thread(target=data_generator_task)
-                self._threads.append(thread)
-                thread.start()
-        except:
-            self.stop()
-            raise
-
-    def is_running(self):
-        return self._stop_event is not None and not self._stop_event.is_set()
-
-    def stop(self, timeout=None):
-        """Stop running threads and wait for them to exit, if necessary.
-        Should be called by the same thread which called start().
-        # Arguments
-            timeout: maximum time to wait on thread.join()
-        """
-        if self.is_running():
-            self._stop_event.set()
-
-        for thread in self._threads:
-            if thread.is_alive():
-                if self._use_multiprocessing:
-                    thread.terminate()
-                else:
-                    thread.join(timeout)
-
-        if self._use_multiprocessing:
-            if self.queue is not None:
-                self.queue.close()
-
-        self._threads = []
-        self._stop_event = None
-        self.queue = None
-
-
-    def dequeue(self):
-        while self.is_running():
-            if not self.queue.empty():
-                return self.queue.get()
-                break
-            else:
-                time.sleep(self.wait_time)
-
-
-
-#################################################################
-### Batch Iterators #############################################
-#################################################################
-class Iterator(object):
-    '''
-    https://github.com/fchollet/keras/blob/master/keras/preprocessing/image.py
-    '''
-    def __init__(self, N, batch_size, shuffle, seed, infinite):
-        self.N = N
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.batch_index = 0
-        self.total_batches_seen = 0
-        self.lock = threading.Lock()
-        self.index_generator = self._flow_index(N, batch_size, shuffle, seed, infinite)
-
-    def reset(self):
-        self.batch_index = 0
-
-    def _flow_index(self, N, batch_size=32, shuffle=False, seed=None, infinite=True):
-        # ensure self.batch_index is 0
-        self.reset()
-        while 1:
-            if seed is not None:
-                np.random.seed(seed + self.total_batches_seen)
-            if self.batch_index == 0:
-                index_array = np.arange(N)
-                if shuffle:
-                    index_array = np.random.permutation(N)
-
-            if infinite == True:
-                current_index = (self.batch_index * batch_size) % N
-                if N >= current_index + batch_size:
-                    current_batch_size = batch_size
-                    self.batch_index += 1
-                else:
-                    current_batch_size = N - current_index
-                    self.batch_index = 0
-            else:
-                current_index = (self.batch_index * batch_size)
-                if current_index >= N:
-                    self.batch_index = 0
-                    raise StopIteration()
-                elif N >= current_index + batch_size:
-                    current_batch_size = batch_size
-                else:
-                    current_batch_size = N - current_index
-                self.batch_index += 1
-            self.total_batches_seen += 1
-            yield (index_array[current_index: current_index + current_batch_size],
-                   current_index, current_batch_size)
-
-    def __iter__(self):
-        # needed if we want to do something like:
-        # for x, y in data_gen.flow(...):
-        return self
-
-    def __next__(self, *args, **kwargs):
-        return self.next(*args, **kwargs)
-
-
-def _flip_axis(x, axis):
-    x = np.asarray(x).swapaxes(axis, 0)
-    x = x[::-1, ...]
-    x = x.swapaxes(0, axis)
-    return x
-
-class DirectoryIterator_NTIRE2020(Iterator):
-  def __init__(self,
-               train_dir = '/host/media/ssd1/users/yhjo/dataset/NTIRE2020/train/',
-               out_batch_size = 16,
-               crop_size= 64,
-               scale_factor=4,
-               crop_per_frame=4,
-               shuffle = True,
-               seed = None,
-               infinite = True):
-
-    self.train_dir = train_dir
-    self.crop_size = crop_size
-    self.crop_per_frame = crop_per_frame
-    self.out_batch_size = out_batch_size
-    self.r = scale_factor
-
-    import glob
-    import random
-
-
-    gt_files = glob.glob(train_dir+'/*.png')
-    gt_files.sort()
-
-    if shuffle:
-        def shuffle_list(*ls):
-            l = list(zip(*ls))
-            random.shuffle(l)
-            return zip(*l)
-
-        # blur_pngs, sharp_pngs = shuffle_list(blur_pngs, sharp_pngs)
-        random.shuffle(gt_files)
-        
-    self.total_count = len(gt_files)
-    self.gt_files = gt_files
-
-    print('Found %d trainnig samples' % self.total_count)
-
-    super(DirectoryIterator_NTIRE2020, self).__init__(self.total_count, int(out_batch_size/crop_per_frame), shuffle, seed, infinite)
-
-  def next(self):
-    with self.lock:
-        index_array, current_index, current_batch_size = next(self.index_generator)
-    # The transformation of images is not under thread lock so it can be done in parallel
-
-    batch_sharp = []
-    
-    i = 0
-    while len(batch_sharp) < int(self.out_batch_size):
-        sharps = self.gt_files[(current_index+i) % self.total_count]
-        i += 1
-
-        try:
-            S_ = _load_img_array(sharps) # H,W,C
-        except:
-            print("File open error: {}".format(sharps))
-            continue
-
-        ss = S_.shape
-        sh = np.random.randint(0, ss[0]-self.crop_size+1, self.crop_per_frame)
-        sw = np.random.randint(0, ss[1]-self.crop_size+1, self.crop_per_frame)
-
-        for j in range(self.crop_per_frame):
-            S = S_[sh[j]:(sh[j]+self.crop_size), sw[j]:(sw[j]+self.crop_size)]
-
-            # Random Aug
-            # Rot
-            ri = np.random.randint(0,4)
-            S = np.rot90(S, ri)
-
-            # LR flip
-            if np.random.random() < 0.5:
-                S = _flip_axis(S, 1)
-
-            batch_sharp.append(S)
-
-    batch_sharp = np.stack(batch_sharp, 0).astype(np.float32).transpose((0,3,1,2))   # B, C, H, W
-
-    return  batch_sharp
-
-
-# MATLAB imresize function
-# Key difference from other resize funtions is antialiasing when downsampling
-# This function only for downsampling
-def DownSample2DMatlab(tensor, scale, method='cubic', antialiasing=True, cuda=True):
-    '''
-    This gives same result as MATLAB downsampling
-    tensor: 4D tensor [Batch, Channel, Height, Width],
-            height and width must be divided by the denominator of scale factor
-    scale: Even integer denominator scale factor only (e.g. 1/2,1/4,1/8,...)
-           Or list [1/2, 1/4] : [V scale, H scale]
-    method: 'cubic' as default, currently cubic supported
-    antialiasing: True as default
-    '''
-
-    # For cubic interpolation,
-    # Cubic Convolution Interpolation for Digital Image Processing, ASSP, 1981
-    def cubic(x):
-        absx = np.abs(x)
-        absx2 = np.multiply(absx, absx)
-        absx3 = np.multiply(absx2, absx)
-
-        f = np.multiply((1.5*absx3 - 2.5*absx2 + 1), np.less_equal(absx, 1)) + \
-            np.multiply((-0.5*absx3 + 2.5*absx2 - 4*absx + 2), \
-            np.logical_and(np.less(1, absx), np.less_equal(absx, 2)))
-
-        return f
-
-    # Generate resize kernel (resize weight computation)
-    def contributions(scale, kernel, kernel_width, antialiasing):
-        if scale < 1 and antialiasing:
-          kernel_width = kernel_width / scale
-
-        x = np.ones((1, 1))
-
-        u = x/scale + 0.5 * (1 - 1/scale)
-
-        left = np.floor(u - kernel_width/2)
-
-        P = int(np.ceil(kernel_width) + 2)
-
-        indices = np.tile(left, (1, P)) + np.expand_dims(np.arange(0, P), 0)
-
-        if scale < 1 and antialiasing:
-          weights = scale * kernel(scale * (np.tile(u, (1, P)) - indices))
-        else:
-          weights = kernel(np.tile(u, (1, P)) - indices)
-
-        weights = weights / np.expand_dims(np.sum(weights, 1), 1)
-
-        save = np.where(np.any(weights, 0))
-        weights = weights[:, save[0]]
-
-        return weights
-
-    # Resize along a specified dimension
-    def resizeAlongDim(tensor, scale_v, scale_h, kernel_width, weights):#, indices):
-        if scale_v < 1 and antialiasing:
-           kernel_width_v = kernel_width / scale_v
-        else:
-           kernel_width_v = kernel_width
-        if scale_h < 1 and antialiasing:
-           kernel_width_h = kernel_width / scale_h
-        else:
-           kernel_width_h = kernel_width
-
-        # Generate filter
-        f_height = np.transpose(weights[0][0:1, :])
-        f_width = weights[1][0:1, :]
-        f = np.dot(f_height, f_width)
-        f = f[np.newaxis, np.newaxis, :, :]
-        F = torch.from_numpy(f.astype('float32'))
-
-        # Reflect padding
-        i_scale_v = int(1/scale_v)
-        i_scale_h = int(1/scale_h)
-        pad_top = int((kernel_width_v - i_scale_v) / 2)
-        if i_scale_v == 1:
-            pad_top = 0
-        pad_bottom = int((kernel_width_h - i_scale_h) / 2)
-        if i_scale_h == 1:
-            pad_bottom = 0
-        pad_array = ([pad_bottom, pad_bottom, pad_top, pad_top])
-        kernel_width_v = int(kernel_width_v)
-        kernel_width_h = int(kernel_width_h)
-
-        #
-        tensor_shape = tensor.size()
-        num_channel = tensor_shape[1]
-        FT = nn.Conv2d(1, 1, (kernel_width_v, kernel_width_h), (i_scale_v, i_scale_h), bias=False)
-        FT.weight.data = F
-        if cuda:
-           FT.cuda()
-        FT.requires_grad = False
-
-        # actually, we want 'symmetric' padding, not 'reflect'
-        outs = []
-        for c in range(num_channel):
-            padded = nn.functional.pad(tensor[:,c:c+1,:,:], pad_array, 'reflect')
-            outs.append(FT(padded))
-        out = torch.cat(outs, 1)
-
-        return out
-
-    if method == 'cubic':
-        kernel = cubic
-
-    kernel_width = 4
-
-    if type(scale) is list:
-        scale_v = float(scale[0])
-        scale_h = float(scale[1])
-
-        weights = []
-        for i in range(2):
-            W = contributions(float(scale[i]), kernel, kernel_width, antialiasing)
-            weights.append(W)
-    else:
-        scale = float(scale)
-
-        scale_v = scale
-        scale_h = scale
-
-        weights = []
-        for i in range(2):
-            W = contributions(scale, kernel, kernel_width, antialiasing)
-            weights.append(W)
-
-    # np.save('bic_x4_downsample_h.npy', weights[0])
-
-    tensor = resizeAlongDim(tensor, scale_v, scale_h, kernel_width, weights)
-
-    return tensor
-
-
-
-def Huber(input, target, delta=0.01, reduce=True):
-    abs_error = torch.abs(input - target)
-    quadratic = torch.clamp(abs_error, max=delta)
-
-    # The following expression is the same in value as
-    # tf.maximum(abs_error - delta, 0), but importantly the gradient for the
-    # expression when abs_error == delta is 0 (for tf.maximum it would be 1).
-    # This is necessary to avoid doubling the gradient, since there is already a
-    # nonzero contribution to the gradient from the quadratic term.
-    linear = (abs_error - quadratic)
-    losses = 0.5 * torch.pow(quadratic, 2) + delta * linear
-    
-    if reduce:
-        return torch.mean(losses)
-    else:
-        return losses
-
-
-
-
-
-
-# LPIPS
+### Quality mesuare ###
+## LPIPS
 import LPIPS.models.dist_model as dm
-
 model_LPIPS = dm.DistModel()
 model_LPIPS.initialize(model='net-lin',net='alex',use_gpu=True)
 
-def im2tensor(image, imtype=np.uint8, cent=1., factor=255./2.):
-# def im2tensor(image, imtype=np.uint8, cent=1., factor=1.):
-    return torch.Tensor((image / factor - cent)
-                        [:, :, :, np.newaxis].transpose((3, 2, 0, 1)))
 
-def load_image(path):
-    if(path[-3:] == 'dng'):
-        import rawpy
-        with rawpy.imread(path) as raw:
-            img = raw.postprocess()
-        # img = plt.imread(path)
-    elif(path[-3:]=='bmp' or path[-3:]=='jpg' or path[-3:]=='png'):
-        import cv2
-        return cv2.imread(path)[:,:,::-1]
-    else:
-        img = (255*plt.imread(path)[:,:,:3]).astype('uint8')
-
-    return img
-
-
-
-
-
-
-
-## ESRGAN
+### Generator ###
+## ESRGAN for x16
 import RRDBNet_arch as arch
-model_ESRGAN = arch.RRDBNetx4x4(3, 3, 64, 23, gc=32).cuda()
+model_G = arch.RRDBNetx4x4(3, 3, 64, 23, gc=32).cuda()
 
 
 
-
+### U-Net Discriminator ###
 # Residual block for the discriminator
 class DBlock(nn.Module):
     def __init__(self, in_channels, out_channels, which_conv=nn.Conv2d, which_bn=nn.BatchNorm2d, wide=True,
@@ -593,18 +88,18 @@ class DBlock(nn.Module):
         self.bn1 = self.which_bn(self.hidden_channels)
         self.bn2 = self.which_bn(out_channels)
 
-    def shortcut(self, x):
-        if self.preactivation:
-            if self.learnable_sc:
-                x = self.conv_sc(x)
-            if self.downsample:
-                x = self.downsample(x)
-        else:
-            if self.downsample:
-                x = self.downsample(x)
-            if self.learnable_sc:
-                x = self.conv_sc(x)
-        return x
+    # def shortcut(self, x):
+    #     if self.preactivation:
+    #         if self.learnable_sc:
+    #             x = self.conv_sc(x)
+    #         if self.downsample:
+    #             x = self.downsample(x)
+    #     else:
+    #         if self.downsample:
+    #             x = self.downsample(x)
+    #         if self.learnable_sc:
+    #             x = self.conv_sc(x)
+    #     return x
         
     def forward(self, x):
         if self.preactivation:
@@ -658,7 +153,6 @@ class GBlock(nn.Module):
         return h #+ x
 
 
-        
 class UnetD(torch.nn.Module):
     def __init__(self):
         super(UnetD, self).__init__()
@@ -692,7 +186,6 @@ class UnetD(torch.nn.Module):
                 m.weight.data.normal_(1.0, 0.02)
                 m.bias.data.fill_(0)
 
-
     def forward(self, x):
         e1 = self.enc_b1(x)
         e2 = self.enc_b2(e1)
@@ -723,55 +216,33 @@ class UnetD(torch.nn.Module):
 model_D = UnetD().cuda()
 
 
+## Optimizers
+params_G = list(filter(lambda p: p.requires_grad, model_G.parameters()))
+opt_G = optim.Adam(params_G, lr=LR_G)
+
+params_D = list(filter(lambda p: p.requires_grad, model_D.parameters()))
+opt_D = optim.Adam(params_D, lr=LR_D)
+
+
+## Load saved params
+if START_ITER > 0:
+    lm = torch.load('{}/checkpoint/v{}/model_G_i{:06d}.pth'.format(EXP_NAME, str(VERSION), START_ITER))
+    model_G.load_state_dict(lm.state_dict(), strict=True)
+    
+
+# Training dataset
+Iter_H = GeneratorEnqueuer(DirectoryIterator_NTIRE2020(
+                            TRAIN_DIR,
+                            out_batch_size = NB_BATCH, 
+                            crop_size = PATCH_SIZE + UPSCALE*4,
+                            scale_factor = UPSCALE,
+                            crop_per_frame = NB_CROP_FRAME,
+                            shuffle=True))
+Iter_H.start(max_q_size=16, workers=2)
 
 
 
-
-
-# USER PARAMS
-EXP_NAME = "PESR"
-VERSION = "1"
-
-UPSCALE = 16     # upscaling factor
-NB_BATCH = 2   # 1*4
-NB_CROP_FRAME = 2
-NB_ITER = 200000    # Total number of iterations
-
-I_DISPLAY = 100
-I_VALIDATION = 100
-I_SAVE = 1000
-
-best_avg_psnr = 26    # DUF-16: 26.8, FRVSR-10-128: 26.9, RLSP-7-128: 27.46
-best_avg_lpips = 0.15
-
-
-
-# model_ESRGAN.load_state_dict(torch.load('./model.pth').state_dict(), strict=True)
-
-TRAIN_DIR = '../../../../../../../ssd1/users/yhjo/dataset/NTIRE2020/train/'
-VAL_DIR = '../../../../../../../ssd1/users/yhjo/dataset/NTIRE2020/val/'
-
-
-
-
-
-# from tensorboardX import SummaryWriter
-# writer = SummaryWriter(log_dir='../pt_log/{}/v{}'.format(EXP_NAME, str(VERSION)))
-
-
-
-
-# Iteration
-print('===> Training start')
-l_accum = [0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.]
-l_accum_n = 0.
-dT = 0.
-rT = 0.
-
-
-
-
-
+## Prepare directories
 if not isdir('{}'.format(EXP_NAME)):
     mkdir('{}'.format(EXP_NAME))
 if not isdir('{}/checkpoint'.format(EXP_NAME)):
@@ -784,57 +255,27 @@ if not isdir('{}/result/v{}'.format(EXP_NAME, str(VERSION))):
     mkdir('{}/result/v{}'.format(EXP_NAME, str(VERSION)))
 
 
-
-
-params_G = list(filter(lambda p: p.requires_grad, model_ESRGAN.parameters()))
-opt_G = optim.Adam(params_G, lr=0.00001)
-
-params_D = list(filter(lambda p: p.requires_grad, model_D.parameters()))
-opt_D = optim.Adam(params_D, lr=0.00001)
-
-
-
-
-START_ITER = 0
-if START_ITER > 0:
-    lm = torch.load('{}/checkpoint/v{}/model_ESRGAN_i{:06d}.pth'.format(EXP_NAME, str(141), START_ITER))
-    model_ESRGAN.load_state_dict(lm.state_dict(), strict=True)
-    
-
-
-
-# Training dataset
-Iter_H = GeneratorEnqueuer(DirectoryIterator_NTIRE2020(  #GeneratorEnqueuer
-                                   TRAIN_DIR,    # ciplab-seven
-                                #    '/host/home/ciplab/users/yhjo/dataset/REDS/train/',    # ciplab-seven
-                                 out_batch_size=NB_BATCH, 
-                                 crop_size=384+UPSCALE*4,
-                                 scale_factor=UPSCALE,
-                                 crop_per_frame = NB_CROP_FRAME,
-                                 shuffle=True))
-Iter_H.start(max_q_size=16, workers=2)
-
-
-
-def SaveCheckpoint():
-    torch.save(model_ESRGAN, '{}/checkpoint/v{}/model_ESRGAN_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    # torch.save(model_ESRGAN2, '{}/checkpoint/v{}/model_ESRGAN2_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    # torch.save(model_ESRGAN_x2, '{}/checkpoint/v{}/model_ESRGAN_x2_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-
-    # torch.save(model_FH, '{}/checkpoint/v{}/model_FH_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    torch.save(model_D, '{}/checkpoint/v{}/model_D_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    # torch.save(model_NL, '{}/checkpoint/v{}/model_NL_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-
-    torch.save(opt_G, '{}/checkpoint/v{}/opt_G_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    torch.save(opt_D, '{}/checkpoint/v{}/opt_D_i{:06d}.pth'.format(EXP_NAME, str(VERSION), i))
-    print("Checkpoint saved")
-
-
-
-
-
+## Some preparations 
+print('===> Training start')
+l_accum = [0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.]
+l_accum_n = 0.
+dT = 0.
+rT = 0.
+n_mix = 0
 accum_samples = 0
 
+
+def SaveCheckpoint(i, best=False):
+    str_best = ''
+    if best:
+        str_best = '_best'
+
+    torch.save(model_G, '{}/checkpoint/v{}/model_G_i{:06d}{}.pth'.format(EXP_NAME, str(VERSION), i, str_best))
+    torch.save(model_D, '{}/checkpoint/v{}/model_D_i{:06d}{}.pth'.format(EXP_NAME, str(VERSION), i, str_best))
+
+    torch.save(opt_G, '{}/checkpoint/v{}/opt_G_i{:06d}{}.pth'.format(EXP_NAME, str(VERSION), i, str_best))
+    torch.save(opt_D, '{}/checkpoint/v{}/opt_D_i{:06d}{}.pth'.format(EXP_NAME, str(VERSION), i, str_best))
+    print("Checkpoint saved")
 
 
 def rand_bbox(size, lam):
@@ -856,241 +297,178 @@ def rand_bbox(size, lam):
     return bbx1, bby1, bbx2, bby2
 
 
-n_mix = 0
 
-# TRAINING
+### TRAINING
 for i in tqdm(range(START_ITER+1, NB_ITER+1)):
 
-    # # Adjust LR 
-    # if i == ((NB_ITER // 4) * 2) + 1:
-    #     for param_group in opt_G.param_groups:
-    #         param_group['lr'] = 0.00001/2
-    #     for param_group in opt_D.param_groups:
-    #         param_group['lr'] = 0.00001/2
-
-    # elif i == ((NB_ITER // 4) * 3) + 1:
-    #     for param_group in opt_G.param_groups:
-    #         param_group['lr'] = 0.00001/2/2
-    #     for param_group in opt_D.param_groups:
-    #         param_group['lr'] = 0.00001/2/2
-
-
-    model_ESRGAN.train()
+    model_G.train()
     model_D.train()
 
 
-    p_mix = i / 100000
-    if p_mix > 0.5:
-        p_mix = 0.5
+    if i > NB_ITER_MSE:
+        ## TRAIN D
+        # Data preparing
+        st = time.time()
+        batch_H = Iter_H.dequeue()  # BxCxHxW, data range [0, 1]
+        batch_H = Variable(torch.from_numpy(batch_H)).cuda()  # Matlab downsampled
+
+        batch_L_Matlab = DownSample2DMatlab(batch_H, 1/float(UPSCALE))
+        batch_L_Matlab = torch.clamp(batch_L_Matlab, 0, 1)
+
+        # Crop borders for avoiding errors
+        batch_H = batch_H[:,:,UPSCALE*2:-UPSCALE*2,UPSCALE*2:-UPSCALE*2]
+        batch_L_Matlab = batch_L_Matlab[:,:,2:-2,2:-2]
+        dT += time.time() - st
 
 
-    # Data preparing
-    # EDVR (vimeo): 7 frames, Matlab downsampling
+        st = time.time()
+        opt_G.zero_grad()
+        opt_D.zero_grad()
+        
+        # G
+        batch_S = model_G(batch_L_Matlab).detach()
+
+        # D
+        e_S, d_S, _, _ = model_D( batch_S )
+        e_H, d_H, _, _ = model_D( batch_H )
+
+        # D Loss, for encoder end and decoder end
+        loss_D_Enc_S = torch.nn.ReLU()(1.0 + e_S).mean()
+        loss_D_Enc_H = torch.nn.ReLU()(1.0 - e_H).mean()
+
+        loss_D_Dec_S = torch.nn.ReLU()(1.0 + d_S).mean()
+        loss_D_Dec_H = torch.nn.ReLU()(1.0 - d_H).mean()
+
+        loss_D = loss_D_Enc_H + loss_D_Dec_H
+
+        # CutMix for consistency loss
+        batch_S_CutMix = batch_S.clone()
+
+        # probability of doing cutmix
+        p_mix = i / 100000
+        if p_mix > 0.5:
+            p_mix = 0.5
+
+        if torch.rand(1) <= p_mix:
+            n_mix += 1
+            r_mix = torch.rand(1)   # real/fake ratio
+
+            bbx1, bby1, bbx2, bby2 = rand_bbox(batch_S_CutMix.size(), r_mix)
+            batch_S_CutMix[:, :, bbx1:bbx2, bby1:bby2] = batch_H[:, :, bbx1:bbx2, bby1:bby2]
+            # adjust lambda to exactly match pixel ratio
+            r_mix = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (batch_S_CutMix.size()[-1] * batch_S_CutMix.size()[-2]))
+
+            e_mix, d_mix, _, _ = model_D( batch_S_CutMix )
+
+            loss_D_Enc_S = torch.nn.ReLU()(1.0 + e_mix).mean()
+            loss_D_Dec_S = torch.nn.ReLU()(1.0 + d_mix).mean()
+
+            d_S[:,:,bbx1:bbx2, bby1:bby2] = d_H[:,:,bbx1:bbx2, bby1:bby2]
+            loss_D_Cons = F.mse_loss(d_mix, d_S)
+
+            loss_D += loss_D_Cons
+            l_accum[5] += torch.mean(loss_D_Cons).item()
+
+        loss_D += loss_D_Enc_S + loss_D_Dec_S
+
+        # Update
+        loss_D.backward()
+        torch.nn.utils.clip_grad_norm_(params_D, 0.1)
+        opt_D.step()
+        rT += time.time() - st
+
+        # for monitoring
+        l_accum[0] += loss_D.item()
+        l_accum[1] += torch.mean(e_H).item()
+        l_accum[2] += torch.mean(e_S).item()
+        l_accum[3] += torch.mean(d_H).item()
+        l_accum[4] += torch.mean(d_S).item()
+
+
+    ## TRAIN G
     st = time.time()
-    batch_H = Iter_H.dequeue()  # BxCxTxHxW
+    batch_H = Iter_H.dequeue()  # BxCxHxW, data range [0, 1]
     batch_H = Variable(torch.from_numpy(batch_H)).cuda()  # Matlab downsampled
-    # batch_H = batch_H[:,:,0]
 
     batch_L_Matlab = DownSample2DMatlab(batch_H, 1/float(UPSCALE))
     batch_L_Matlab = torch.clamp(batch_L_Matlab, 0, 1)
 
-    # batch_LI_Matlab = DownSample2DMatlab(batch_H, 1/4.0)
-    # batch_LI_Matlab = torch.clamp(batch_LI_Matlab, 0, 1)
-
     batch_H = batch_H[:,:,UPSCALE*2:-UPSCALE*2,UPSCALE*2:-UPSCALE*2]
     batch_L_Matlab = batch_L_Matlab[:,:,2:-2,2:-2]
-
-    # batch_LI_Matlab = batch_LI_Matlab[:,:,8:-8,8:-8]
-
     dT += time.time() - st
 
 
-
-    # TRAIN D
     st = time.time()
-
-    opt_G.zero_grad()
-    opt_D.zero_grad()
-    
-    # RCAN
-    batch_S_RCAN = model_ESRGAN(batch_L_Matlab).detach()
-
-    batch_S_RCAN_CutMix = batch_S_RCAN.clone()
-
-    # FH
-    e_S, d_S, _, _ = model_D( batch_S_RCAN )
-    e_H, d_H, _, _ = model_D( batch_H )
-
-    # Loss
-    # D, real/fake
-    loss_D_E_S = torch.nn.ReLU()(1.0 + e_S).mean()
-    loss_D_E_H = torch.nn.ReLU()(1.0 - e_H).mean()
-
-    loss_D_D_S = torch.nn.ReLU()(1.0 + d_S).mean()
-    loss_D_D_H = torch.nn.ReLU()(1.0 - d_H).mean()
-
-    loss_D = loss_D_E_H + loss_D_D_H
-
-    # CutMix
-    if torch.rand(1) <= p_mix:
-        n_mix += 1
-
-        r_mix = torch.rand(1)   # real/fake ratio
-
-        # rand_index = torch.randperm(batch_S_RCAN.size()[0]).cuda()
-        bbx1, bby1, bbx2, bby2 = rand_bbox(batch_S_RCAN.size(), r_mix)
-        batch_S_RCAN_CutMix[:, :, bbx1:bbx2, bby1:bby2] = batch_H[:, :, bbx1:bbx2, bby1:bby2]
-        # adjust lambda to exactly match pixel ratio
-        r_mix = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (batch_S_RCAN.size()[-1] * batch_S_RCAN.size()[-2]))
-
-
-        # tmp = batch_S_RCAN_CutMix.cpu().data.numpy()
-        # outs = []
-        # for b in range(NB_BATCH):
-        #     outs += [tmp[b].transpose((1,2,0))]
-            
-        # PIL.Image.fromarray(np.around(np.concatenate(outs, 1)*255).astype(np.uint8)).save("r_mix.png".format(r_mix))
-        # input(r_mix)
-
-
-        e_mix, d_mix, _, _ = model_D( batch_S_RCAN_CutMix )
-
-        loss_D_E_S = torch.nn.ReLU()(1.0 + e_mix).mean()
-        loss_D_D_S = torch.nn.ReLU()(1.0 + d_mix).mean()
-
-        d_S[:,:,bbx1:bbx2, bby1:bby2] = d_H[:,:,bbx1:bbx2, bby1:bby2]
-        loss_D_Cons = F.mse_loss(d_mix, d_S)
-
-        loss_D += loss_D_Cons
-        l_accum[5] += torch.mean(loss_D_Cons).item()
-
-    loss_D += loss_D_E_S + loss_D_D_S
-
-    # Update
-    loss_D.backward()
-    torch.nn.utils.clip_grad_norm_(params_D, 0.1)
-    opt_D.step()
-    rT += time.time() - st
-
-    l_accum[0] += loss_D.item()
-
-    # for monitoring
-    l_accum[1] += torch.mean(e_H).item()
-    l_accum[2] += torch.mean(e_S).item()
-    l_accum[3] += torch.mean(d_H).item()
-    l_accum[4] += torch.mean(d_S).item()
-
-
-
-
-
-    # Model
-    # EDVR (vimeo): 7 frames, Matlab downsampling
-    st = time.time()
-    batch_H = Iter_H.dequeue()  # BxCxTxHxW
-    batch_H = Variable(torch.from_numpy(batch_H)).cuda()  # Matlab downsampled
-    # batch_H = batch_H[:,:,0]
-
-    batch_L_Matlab = DownSample2DMatlab(batch_H, 1/float(UPSCALE))
-    batch_L_Matlab = torch.clamp(batch_L_Matlab, 0, 1)
-
-    # batch_LI_Matlab = DownSample2DMatlab(batch_H, 1/4.0)
-    # batch_LI_Matlab = torch.clamp(batch_LI_Matlab, 0, 1)
-
-    batch_H = batch_H[:,:,UPSCALE*2:-UPSCALE*2,UPSCALE*2:-UPSCALE*2]
-    batch_L_Matlab = batch_L_Matlab[:,:,2:-2,2:-2]
-
-    # batch_LI_Matlab = batch_LI_Matlab[:,:,8:-8,8:-8]
-
-    dT += time.time() - st
-
-
-
-
-    st = time.time()
-
     opt_G.zero_grad()
     opt_D.zero_grad()
 
+    batch_S = model_G(batch_L_Matlab)
 
-    loss_Pixels = []
+    # Pixel loss
+    loss_Pixel = Huber(batch_S, batch_H)
+    loss_G = loss_Pixel
 
-    batch_S = model_ESRGAN(batch_L_Matlab)
+    if i > NB_ITER_MSE:
+        # LPIPS loss
+        loss_LPIPS, _ = model_LPIPS.forward_pair(batch_H*2-1, batch_S*2-1)
+        loss_LPIPS = torch.mean(loss_LPIPS) * L_LPIPS
 
+        # FM and GAN losses
+        e_S, d_S, e_Ss, d_Ss = model_D( batch_S )
+        _, _, e_Hs, d_Hs = model_D( batch_H )
 
+        # FM loss
+        loss_FMs = []
+        for f in range(6):
+            loss_FMs += [Huber(e_Ss[f], e_Hs[f])]
+            loss_FMs += [Huber(d_Ss[f], d_Hs[f])]
+        loss_FM = torch.mean(torch.stack(loss_FMs)) * L_FM
 
-    loss_Pixels = Huber(batch_S, batch_H)
-    loss_LPIPSs, _ = model_LPIPS.forward_pair(batch_H*2-1, batch_S*2-1)
-    
+        # GAN loss
+        loss_Advs = []
+        loss_Advs += [torch.nn.ReLU()(1.0 - e_S).mean() * L_ADV]
+        loss_Advs += [torch.nn.ReLU()(1.0 - d_S).mean() * L_ADV]
+        loss_Adv = torch.mean(torch.stack(loss_Advs))
+
+        loss_G += loss_LPIPS + loss_FM + loss_Adv
+
+        # For monitoring
+        l_accum[7] += loss_LPIPS.item()
+        l_accum[8] += loss_FM.item()
+        l_accum[9] += loss_Adv.item()
+        
     # Update
-    loss_Pixel = torch.mean(loss_Pixels)
-    loss_LPIPS = torch.mean(loss_LPIPSs)*1e-3
-    # loss_FM = torch.mean(torch.stack(loss_FMs))
-
-    loss_G = loss_Pixel 
-
-
-    # FH
-    e_S, d_S, e_Ss, d_Ss = model_D( batch_S )
-    e_H, d_H, e_Hs, d_Hs = model_D( batch_H )
-
-    loss_FMs = []
-    for f in range(6):
-        loss_FMs += [Huber(e_Ss[f], e_Hs[f])]
-        loss_FMs += [Huber(d_Ss[f], d_Hs[f])]
-
-    loss_FMs += [torch.nn.ReLU()(1.0 - e_S).mean() * 1e-3]
-    loss_FMs += [torch.nn.ReLU()(1.0 - d_S).mean() * 1e-3]
-
-    loss_FM = torch.mean(torch.stack(loss_FMs))
-
-    # al = 0
-
-    loss_G += loss_LPIPS + loss_FM
-    
-    l_accum[8] += loss_FM.item()
-
-
-
-
     loss_G.backward()
     torch.nn.utils.clip_grad_norm_(params_G, 0.1)
     opt_G.step()
-
-
     rT += time.time() - st
 
-    accum_samples += NB_BATCH
+    # For monitoring
     l_accum[6] += loss_Pixel.item()
-    l_accum[7] += loss_LPIPS.item()
-    l_accum[9] += loss_G.item()
+    l_accum[10] += loss_G.item()
+    accum_samples += NB_BATCH
 
 
-
+    ## Show information
     if i % I_DISPLAY == 0:
-        # writer.add_scalar('loss_D', l_accum[0]/I_DISPLAY, i)
-        # writer.add_scalar('prob_real', l_accum[1]/I_DISPLAY, i)
-        # writer.add_scalar('prob_fake', (l_accum[2]+l_accum[3])/2/I_DISPLAY, i)
-        # writer.add_scalar('loss_Pixel', l_accum[0]/I_DISPLAY, i)
-        # writer.add_scalar('loss_LPIPS', l_accum[1]/I_DISPLAY, i)
-        # writer.add_scalar('loss_G', l_accum[2]/I_DISPLAY, i)
-
-        print("{} {}| Iter:{:6d}, Sample:{:6d}, D:{:.2e}, DE(1/-1):{:.2f}/{:.2f}, DD(1/-1):{:.2f}/{:.2f}, nMix:{:2d}, Dcons:{:.2e}, Pixel:{:.2e}, FM:{:.2e}, Adv:{:.2e}, G:{:.2e}, dT:{:.4f}, rT:{:.4f}".format(
-            EXP_NAME, VERSION, i, accum_samples, l_accum[0]/I_DISPLAY, l_accum[1]/I_DISPLAY, l_accum[2]/I_DISPLAY, l_accum[3]/I_DISPLAY, l_accum[4]/I_DISPLAY, n_mix, l_accum[5]/(n_mix+1e-12), l_accum[6]/I_DISPLAY, l_accum[7]/I_DISPLAY, l_accum[8]/I_DISPLAY, l_accum[9]/I_DISPLAY, dT/I_DISPLAY, rT/I_DISPLAY))
+        print("{} {} | Iter:{:6d}, Sample:{:6d}, D:{:.2e}, DEnc(1/-1):{:.2f}/{:.2f}, DDec(1/-1):{:.2f}/{:.2f}, nMix:{:2d}, Dcons:{:.2e}, GPixel:{:.2e}, GLPIPS:{:.2e}, GFM:{:.2e}, GAdv:{:.2e}, G:{:.2e}, dT:{:.4f}, rT:{:.4f}".format(
+            EXP_NAME, VERSION, i, accum_samples, l_accum[0]/I_DISPLAY, l_accum[1]/I_DISPLAY, l_accum[2]/I_DISPLAY, l_accum[3]/I_DISPLAY, l_accum[4]/I_DISPLAY, n_mix, l_accum[5]/(n_mix+1e-12), l_accum[6]/I_DISPLAY, l_accum[7]/I_DISPLAY, l_accum[8]/I_DISPLAY, l_accum[9]/I_DISPLAY, l_accum[10]/I_DISPLAY, dT/I_DISPLAY, rT/I_DISPLAY))
         l_accum = [0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.,0.]
         l_accum_n = 0.
-        n_mix=0
+        n_mix = 0
         dT = 0.
         rT = 0.
 
 
+    ## Save models
     if i % I_SAVE == 0:
-        SaveCheckpoint()
+        SaveCheckpoint(i)
 
 
+    ## Validate
     if i % I_VALIDATION == 0:
         with torch.no_grad():
-            model_ESRGAN.eval()
+            model_G.eval()
 
             # Test for validation images
             vid4_dir = VAL_DIR
@@ -1098,25 +476,16 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
 
             psnrs = []
             lpips = []
-            if not isdir('{}/result/v{}'.format(EXP_NAME, str(VERSION))):
-                mkdir('{}/result/v{}'.format(EXP_NAME, str(VERSION)))
 
             for fn in files:
+                # Load test image
                 tmp = _load_img_array(fn)
-
                 val_H = np.asarray(tmp).astype(np.float32) # HxWxC
                 val_H_ = val_H
                 val_H_ = np.transpose(val_H_, [2, 0, 1]) # CxHxW
                 batch_H = val_H_[np.newaxis, ...]
 
-                # # Fixed padding 8,8
-                # h_pad = [8, 8]
-                # w_pad = [8, 8]
-                # batch_H = np.lib.pad(batch_H, pad_width=((0,0),(0,0),(h_pad[0],h_pad[1]),(0,0)), mode = 'reflect')
-                # batch_H = np.lib.pad(batch_H, pad_width=((0,0),(0,0),(0,0),(w_pad[0],w_pad[1])), mode = 'reflect')
-
-
-
+                # Padding
                 h_least_multiple = UPSCALE
                 w_least_multiple = UPSCALE
 
@@ -1132,57 +501,52 @@ for i in tqdm(range(START_ITER+1, NB_ITER+1)):
                     batch_H = np.lib.pad(batch_H, pad_width=((0,0),(0,0),(0,0),(w_pad[0],w_pad[1])), mode = 'reflect')
 
 
-
-                # val_H_ = batch_H[np.newaxis, ...]  # BxCxTxHxW
-                batch_H = Variable(torch.from_numpy(batch_H), volatile=True).cuda()
+                # Data
+                batch_H = Variable(torch.from_numpy(batch_H)).cuda()
                         
-                # Down sampling
-                xh = DownSample2DMatlab(batch_H, 1/UPSCALE)
-                xh = torch.clamp(xh, 0, 1)
+                batch_L = DownSample2DMatlab(batch_H, 1/UPSCALE)
+                batch_L = torch.clamp(torch.round(batch_L*255)/255.0, 0, 1)
 
-                batch_output = model_ESRGAN(xh)
+                # Forward
+                batch_Out = model_G(batch_L)
 
-                #
-                out_FI2 = (batch_output).cpu().data.numpy()
-                out_FI2 = np.clip(out_FI2[0], 0. , 1.) # CxHxW
-                out_FI2 = np.transpose(out_FI2, [1, 2, 0])
+                # Output
+                batch_Out = (batch_Out).cpu().data.numpy()
+                batch_Out = np.clip(batch_Out[0], 0. , 1.) # CxHxW
+                batch_Out = np.transpose(batch_Out, [1, 2, 0])
 
+                # Crop padding to the original size
                 if h_pad[0] > 0:
-                    out_FI2 = out_FI2[h_pad[0]:,:,:]
+                    batch_Out = batch_Out[h_pad[0]:,:,:]
                 if h_pad[1] > 0:
-                    out_FI2 = out_FI2[:-h_pad[1],:,:]
+                    batch_Out = batch_Out[:-h_pad[1],:,:]
                 if w_pad[0] > 0:
-                    out_FI2 = out_FI2[:,w_pad[0]:,:]
+                    batch_Out = batch_Out[:,w_pad[0]:,:]
                 if w_pad[1] > 0:
-                    out_FI2 = out_FI2[:,:-w_pad[1],:]
+                    batch_Out = batch_Out[:,:-w_pad[1],:]
                     
                 # Save to file
-                CROP_S = 16
+                Image.fromarray(np.around(batch_Out*255).astype(np.uint8)).save('{}/result/v{}/{}.png'.format(EXP_NAME, str(VERSION), fn.split('/')[-1]))
 
+                # PSNR
                 img_gt = (val_H*255).astype(np.uint8)
-                img_target = ((out_FI2)*255).astype(np.uint8)
+                img_target = ((batch_Out)*255).astype(np.uint8)
 
-                Image.fromarray(np.around(out_FI2*255).astype(np.uint8)).save('{}/result/v{}/{}.png'.format(EXP_NAME, str(VERSION), fn.split('/')[-1]))
-                psnrs.append(PSNR(_rgb2ycbcr(img_gt)[CROP_S:-CROP_S,CROP_S:-CROP_S,0], _rgb2ycbcr(img_target)[CROP_S:-CROP_S,CROP_S:-CROP_S,0], 0))
+                CROP_S = 16
+                if CROP_S > 0:
+                    img_gt = img_gt[CROP_S:-CROP_S,CROP_S:-CROP_S]
+                    img_target = img_target[CROP_S:-CROP_S,CROP_S:-CROP_S]
+                
+                psnrs.append(PSNR(_rgb2ycbcr(img_gt)[:,:,0], _rgb2ycbcr(img_target)[:,:,0], 0))
 
                 # LPIPS
-                # CROP_T = 2
-                img_gt = im2tensor(img_gt) # RGB image from [-1,1]
-                img_target = im2tensor(img_target)
-                if CROP_S > 0:
-                    img_target = img_target[:,:,CROP_S:-CROP_S,CROP_S:-CROP_S]
-                    img_gt = img_gt[:,:,CROP_S:-CROP_S,CROP_S:-CROP_S]
-                dist = model_LPIPS.forward(img_target, img_gt)
+                dist = model_LPIPS.forward(im2tensor(img_target), im2tensor(img_gt))    # RGB image from [0,255] to [-1,1]
                 lpips.append(dist)
 
-        print('AVG PSNR/LPIPS: Set5: {}/{}'.format(np.mean(np.asarray(psnrs)), np.mean(np.asarray(lpips))))
+        print('AVG PSNR/LPIPS: Validation: {}/{}'.format(np.mean(np.asarray(psnrs)), np.mean(np.asarray(lpips))))
 
-
+        # Save best model
         if i % I_SAVE == 0:
-            # writer.add_scalar('set5', np.mean(np.asarray(psnrs)), i)
-            # writer.add_scalar('set5_lpips', np.mean(np.asarray(lpips)), i)
-
             if np.mean(np.asarray(lpips)) < best_avg_lpips:
                 best_avg_lpips = np.mean(np.asarray(lpips))
-                
-                SaveCheckpoint()
+                SaveCheckpoint(i, best=True)
