@@ -4,7 +4,7 @@
 
 Our method ranked first and second in PI and LPIPS measures respectively.
 
-[Paper](http://openaccess.thecvf.com/content_CVPRW_2020/papers/w31/Jo_Investigating_Loss_Functions_for_Extreme_Super-Resolution_CVPRW_2020_paper.pdf) 
+[[Paper]](http://openaccess.thecvf.com/content_CVPRW_2020/papers/w31/Jo_Investigating_Loss_Functions_for_Extreme_Super-Resolution_CVPRW_2020_paper.pdf) 
 
 
 ## Dependency
@@ -18,7 +18,7 @@ Our method ranked first and second in PI and LPIPS measures respectively.
 ## Test
 1. Clone this repo.
 ```
-git clone 
+git clone https://github.com/kingsj0405/ciplab-NTIRE-2020
 ```
 
 2. Download pre-trained model and place it to `./model.pth`.
@@ -37,20 +37,26 @@ If your GPU memory lacks, please try with option `-n 3` or a larger number.
 
 
 ## Train
-1. Prepare training `png` images into `./train`.
+1. Clone this repo.
+```
+git clone https://github.com/kingsj0405/ciplab-NTIRE-2020
+```
 
-2. Prepare validation `png` images into `./val`.
+2. Prepare training png images into `./train`.
 
-3. Open `train.py` and modify user parameters in L22.
+3. Prepare validation png images into `./val`.
 
-4. Run.
+4. Open `train.py` and modify user parameters in L22.
+
+5. Run.
 ```
 python train.py
 ```
 If your GPU memory lacks, please try with lower batch size or patch size.
 
 
-#### BibTeX
+## BibTeX
+```
 @InProceedings{jo2020investigating,
    author = {Jo, Younghyun and Yang, Sejong and Joo Kim, Seon},
    title = {Investigating Loss Functions for Extreme Super-Resolution},
@@ -58,8 +64,9 @@ If your GPU memory lacks, please try with lower batch size or patch size.
    month = {June},
    year = {2020}
 }
+```
 
 
-## Codes from
+## External codes from
 - [LPIPS](https://github.com/richzhang/PerceptualSimilarity)
 - [RRDB (ESRGAN)](https://github.com/xinntao/ESRGAN)
