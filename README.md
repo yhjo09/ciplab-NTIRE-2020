@@ -58,7 +58,7 @@ If your GPU memory lacks, please try with lower batch size or patch size.
 ## BibTeX
 ```
 @InProceedings{jo2020investigating,
-   author = {Jo, Younghyun and Yang, Sejong and Joo Kim, Seon},
+   author = {Jo, Younghyun and Yang, Sejong and Kim, Seon Joo},
    title = {Investigating Loss Functions for Extreme Super-Resolution},
    booktitle = {The IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
    month = {June},
