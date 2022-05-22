@@ -22,8 +22,8 @@ git clone https://github.com/kingsj0405/ciplab-NTIRE-2020
 ```
 
 2. Download pre-trained model and place it to `./model.pth`.
-- [NTIRE submission version](https://drive.google.com/file/d/10lu7rJ8JmiqGnq9k8N2iLei0aUAdhGcz/view?usp=sharing)
-- [Updated version](https://drive.google.com/file/d/1ugIYMCQK-Rw5jyI6CBB3e9ukMCceb7Lm/view?usp=sharing)
+- [NTIRE submission version](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/ETX1zDxhNWVAj93dRDVyPkwBCowCDWtNZe1LWIOUBMjjvg?e=sdaGOg)
+- [Updated version](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/EYqiBQ8176tOuxAUIJa_0qwBiSq-McPvOVstduLb7svX9g?e=dRXkjB)
 
 3. Place low-resolution input images to `./input`.
 
