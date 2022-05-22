@@ -34,7 +34,7 @@ python test.py
 If your GPU memory lacks, please try with option `-n 3` or a larger number.
 
 5. Check your results in `./output`.
-
+- Or you can check [Result.zip](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/Ebjc2lQP1WFEowVBHEAifPgBIWqwNRGAykYvfXcLQxaXPQ?e=gNfPKH) (Some missing files [zip](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/EeneUTivjq9Kl5lBZvgtXLsBRDqaeDyWGefO2OE2YtNm2g?e=mOb4fO))
 
 ## Train
 1. Clone this repo.
