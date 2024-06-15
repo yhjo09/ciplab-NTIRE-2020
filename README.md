@@ -22,8 +22,8 @@ git clone https://github.com/kingsj0405/ciplab-NTIRE-2020
 ```
 
 2. Download pre-trained model and place it to `./model.pth`.
-- [NTIRE submission version](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/ETX1zDxhNWVAj93dRDVyPkwBCowCDWtNZe1LWIOUBMjjvg?e=sdaGOg)
-- [Updated version](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/EYqiBQ8176tOuxAUIJa_0qwBiSq-McPvOVstduLb7svX9g?e=dRXkjB)
+- [NTIRE submission version](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137326&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
+- [Updated version](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137328&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
 
 3. Place low-resolution input images to `./input`.
 
@@ -34,7 +34,7 @@ python test.py
 If your GPU memory lacks, please try with option `-n 3` or a larger number.
 
 5. Check your results in `./output`.
-- Or you can check [Result.zip](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/Ebjc2lQP1WFEowVBHEAifPgBIWqwNRGAykYvfXcLQxaXPQ?e=gNfPKH) (Some missing files [zip](https://yonsei-my.sharepoint.com/:u:/g/personal/yh_jo_o365_yonsei_ac_kr/EeneUTivjq9Kl5lBZvgtXLsBRDqaeDyWGefO2OE2YtNm2g?e=mOb4fO))
+- Or you can check [Result.zip](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137331&parId=ADFCB6E1F3CE1167%2137320&o=OneUp) (Some missing files [zip](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137329&parId=ADFCB6E1F3CE1167%2137320&o=OneUp))
 
 ## Train
 1. Clone this repo.
