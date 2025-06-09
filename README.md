@@ -22,8 +22,8 @@ git clone https://github.com/kingsj0405/ciplab-NTIRE-2020
 ```
 
 2. Download pre-trained model and place it to `./model.pth`.
-- [NTIRE submission version](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137326&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
-- [Updated version](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137328&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
+- [NTIRE submission version](https://onedrive.live.com/?redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvcyFBbWNSenZQaHR2eXRncU5JTl9XS2FLWGVPMjlFeGc%5FZT1GRWVSaEE&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137326&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
+- [Updated version](https://onedrive.live.com/?redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvcyFBbWNSenZQaHR2eXRncU5JTl9XS2FLWGVPMjlFeGc%5FZT1GRWVSaEE&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137328&parId=ADFCB6E1F3CE1167%2137320&o=OneUp)
 
 3. Place low-resolution input images to `./input`.
 
@@ -34,7 +34,7 @@ python test.py
 If your GPU memory lacks, please try with option `-n 3` or a larger number.
 
 5. Check your results in `./output`.
-- Or you can check [Result.zip](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137331&parId=ADFCB6E1F3CE1167%2137320&o=OneUp) (Some missing files [zip](https://onedrive.live.com/?authkey=%21ADf1imil3jtvRMY&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137329&parId=ADFCB6E1F3CE1167%2137320&o=OneUp))
+- Or you can check [Result.zip](https://onedrive.live.com/?redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvcyFBbWNSenZQaHR2eXRncU5JTl9XS2FLWGVPMjlFeGc%5FZT1GRWVSaEE&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137331&parId=ADFCB6E1F3CE1167%2137320&o=OneUp) (Some missing files [zip](https://onedrive.live.com/?redeem=aHR0cHM6Ly8xZHJ2Lm1zL2YvcyFBbWNSenZQaHR2eXRncU5JTl9XS2FLWGVPMjlFeGc%5FZT1GRWVSaEE&cid=ADFCB6E1F3CE1167&id=ADFCB6E1F3CE1167%2137329&parId=ADFCB6E1F3CE1167%2137320&o=OneUp))
 
 ## Train
 1. Clone this repo.
